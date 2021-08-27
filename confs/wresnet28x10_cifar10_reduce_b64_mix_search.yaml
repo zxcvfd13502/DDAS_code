@@ -1,0 +1,14 @@
+model:
+  type: wresnet28_10
+dataset: reduced_cifar10
+aug: 'mix'
+cutout: 16
+batch: 32
+epoch: 90
+lr: 0.025
+lr_schedule:
+    type: 'resnet'
+optimizer:
+  type: sgd
+  nesterov: True
+  decay: 0.0005

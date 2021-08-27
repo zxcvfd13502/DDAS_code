@@ -1,0 +1,20 @@
+model:
+  type: wresnet28_10
+dataset: cifar10
+aug: randaugment
+randaug:
+  N: 3
+  M: 5  
+cutout: 16
+batch: 16
+epoch: 30
+lr: 0.025
+lr_schedule:
+  type: 'cosine'
+  warmup:
+    multiplier: 2
+    epoch: 5
+optimizer:
+  type: sgd
+  nesterov: True
+  decay: 0.0005

@@ -1,0 +1,19 @@
+model:
+  type: wresnet28_10
+dataset: svhn
+aug: rwaug_s
+rwaug:
+  n: 2
+cutout: 16
+batch: 32
+epoch: 30
+lr: 0.001
+lr_schedule:
+  type: 'cosine'
+  warmup:
+    multiplier: 2
+    epoch: 3
+optimizer:
+  type: sgd
+  nesterov: True
+  decay: 0.001

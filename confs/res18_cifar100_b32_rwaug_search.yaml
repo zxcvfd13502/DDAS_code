@@ -1,0 +1,16 @@
+model:
+  type: resnet18
+dataset: cifar100
+aug: rwaug_s
+rwaug:
+  n: 2
+cutout: 16
+batch: 32
+epoch: 30
+lr: 0.01
+lr_schedule:
+  type: 'cosine'
+optimizer:
+  type: sgd
+  nesterov: True
+  decay: 0.0005
