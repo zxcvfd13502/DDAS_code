@@ -14,6 +14,7 @@ from torch.nn.parallel.data_parallel import DataParallel
 
 from tqdm import tqdm
 from theconf import Config as C, ConfigArgumentParser
+from tensorboardX import SummaryWriter
 
 from common import get_logger
 from data import get_dataloaders, Get_DataLoaders_Epoch_s, get_val_test_dataloader
@@ -31,14 +32,11 @@ from itertools import cycle
 logger = get_logger('RandAugment')
 logger.setLevel(logging.INFO)
 
-w_bad = []
-f_bad = []
-aug_gis = []
 dis_ps = []
 tps = []
-
+#Function to run normal training!
 def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, writer=None, verbose=1, scheduler=None):
-    tqdm_disable = bool(os.environ.get('TASK_NAME', ''))    # KakaoBrain Environment
+    tqdm_disable = bool(os.environ.get('TASK_NAME', ''))
     if verbose:
         loader = tqdm(loader, disable=tqdm_disable)
         loader.set_description('[%s %04d/%04d]' % (desc_default, epoch, C.get()['epoch']))
@@ -94,39 +92,40 @@ def run_epoch(model, loader, loss_fn, optimizer, desc_default='', epoch=0, write
         for key, value in metrics.items():
             writer.add_scalar(key, value, epoch)
     return metrics
-
+#Function to run search
 def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_aug, optimizer_tp,
                     aug_param, tp_param, desc_default='',explore_ratio = 0, w0s_at=[],w0s_mt=[], 
                     ops_num = 2, epoch=0, writer=None, verbose=1, scheduler=None,
                     dict_reward={}):
-    tqdm_disable = bool(os.environ.get('TASK_NAME', ''))    # KakaoBrain Environment
+    tqdm_disable = bool(os.environ.get('TASK_NAME', ''))
+
     transform_or = copy.deepcopy(loaders[0].dataset.transform)
     loaders[0].dataset.transform = transforms.ToTensor()
+
     if verbose:
-        
         loader_t = tqdm(loaders[0], disable=tqdm_disable)
         loader_t.set_description('[%s %04d/%04d]' % (desc_default, epoch, C.get()['epoch']))
+    
     rw_search = RWAug_Search(ops_num,[0,0])
     metrics = Accumulator()
     cnt = 0
     total_steps = len(loaders[0])
     steps = 0
     val_loader = cycle(val_loader)
-    w0s_avg = []
-    w0s_max = []
-    w_bad_epoch = []
-    f_bad_epoch = []
-    aug_gis_epoch = []
+    
     dis_ps.append(torch.nn.Softmax()(aug_param).data.numpy())
     tps.append(torch.sigmoid(tp_param).data.item())
     print(dis_ps[-1])
     print(torch.sigmoid(tp_param))
-    
+
+    #Save the probability
     save_dict = {}
     save_dict['dis_ps'] = dis_ps
     save_dict['w0s_mt'] = w0s_mt
     save_dict['tps'] = np.array(tps)
     np.save(args.save[:-4]+'_save_dict'+'.npy',save_dict)
+
+    #Select the augmentation operation
     for data in loader_t:
         aug_types = []
         for idl in range(1,len(loaders)):
@@ -134,17 +133,16 @@ def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_au
                 tmp_type = (ops_num, select_op(aug_param, ops_num))
             else:
                 tmp_type = (ops_num, select_op(torch.zeros(len(aug_ohl_list)), ops_num))
-            
             aug_types.append(tmp_type)
         aug_probs = []
+
+        #Calculate the probability to select this augmentation operation!
         for aug_type in aug_types:
             idxs = aug_type[1]
             aug_probs.append(trace_prob(aug_param, idxs).item())
-        
         Z = sum(aug_probs)
 
         data_bacth = [copy.deepcopy(data) for _ in range(len(loaders))]
-
         grad_ls = []
         gip_ls =torch.zeros(len(loaders))
 
@@ -154,17 +152,20 @@ def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_au
             optimizer_aug.zero_grad()
         if optimizer_tp:
             optimizer_tp.zero_grad()
-        #model.train()
+        
         for idl in range(len(data_bacth)):
             data, label = data_bacth[idl]
             print(label)
             pil_imgs = []
+
+            #Transform the data to PIL forms!
             for nb in range(len(data)):
                 pil_imgs.append(transforms.ToPILImage()(data[nb]))
             if idl > 0:
                 rw_search.n = aug_types[idl - 1][0]
                 rw_search.idxs = aug_types[idl - 1][1]
-                
+            
+            #Do the selected augmentation
             for idp in range(len(pil_imgs)):
                 if idl > 0:
                     pil_imgs[idp] = rw_search(pil_imgs[idp])
@@ -180,6 +181,7 @@ def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_au
             grad_ls.append(grads_T)
             del data_train, label_train, loss_train, preds_train,loss_T
 
+        #Update the model parameters!
         grad_T = grad_ls[0]
         print("tp")
         print(torch.sigmoid(tp_param).item())
@@ -191,7 +193,7 @@ def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_au
         if optimizer:
             optimizer.step()
         
-        #model.eval()
+        #Calculate the validation gradient
         data_val, label_val = next(val_loader)
         data_val, label_val = data_val.cuda(), label_val.cuda()
         preds_val = model(data_val)
@@ -200,18 +202,18 @@ def run_epoch_search(model, loaders, val_loader, loss_fn, optimizer,optimizer_au
         grads_V = torch.autograd.grad(loss_V, (model.parameters()))
         del data_val, label_val, preds_val, loss_V
 
+        #Calculate the inner product of gradients!
         for idl in range(len(data_bacth)):
             gip_ls[idl] = sum([torch.sum(gt*gv) for gt, gv in zip(grad_ls[idl], grads_V)]).data
-            
             if idl == 0:
                 gip0 = gip_ls[idl].data
-
             gip_ls[idl] = gip_ls[idl] - gip0
             
         gd_norm = torch.norm(gip_ls,p=1)
         print("gip_norm")
         print(gd_norm)
-
+        
+        #Update the augmentation parameters!
         for idl in range(1,len(loaders)):
             idxs = aug_types[idl - 1][1]
             trace_loss = -1 * gip_ls[idl].data.item() * torch.sigmoid(tp_param) * trace_prob(aug_param, idxs)/Z/gd_norm
@@ -280,6 +282,8 @@ def train_and_eval(tag, dataroot, loader_num = 6, test_ratio=0.1, ops_num = 2, e
 
     max_epoch = C.get()['epoch']
     aug_length = len(aug_ohl_list)
+
+    #Initialize the augmentation parameters!
     tp_alpha = np.log(args.init_tp/(1-args.init_tp))
     tp_param = torch.nn.Parameter(torch.ones(1,requires_grad=True) * tp_alpha,requires_grad=True)
     aug_param = torch.nn.Parameter(torch.zeros(aug_length,requires_grad=True),requires_grad=True)
@@ -330,11 +334,11 @@ def train_and_eval(tag, dataroot, loader_num = 6, test_ratio=0.1, ops_num = 2, e
             after_scheduler=scheduler
         )
 
-    if not tag:
-        from RandAugment.metrics import SummaryWriterDummy as SummaryWriter
-        logger.warning('tag not provided, no tensorboard log.')
-    else:
-        from tensorboardX import SummaryWriter
+    # if not tag:
+    #     from RandAugment.metrics import SummaryWriterDummy as SummaryWriter
+    #     logger.warning('tag not provided, no tensorboard log.')
+    # else:
+        
     writers = [SummaryWriter(log_dir='./logs/%s/%s' % (tag, x)) for x in ['train', 'valid', 'test']]
 
     result = OrderedDict()
@@ -377,7 +381,7 @@ def train_and_eval(tag, dataroot, loader_num = 6, test_ratio=0.1, ops_num = 2, e
         result['epoch'] = 0
         return result
 
-    # train loop
+    # search loop
     best_top1 = 0
     dict_reward = {}
     w0s_at=[]
@@ -451,6 +455,13 @@ def train_and_eval(tag, dataroot, loader_num = 6, test_ratio=0.1, ops_num = 2, e
     result['top1_test'] = best_top1
     return result
 
+def setup_seed(seed):
+     torch.manual_seed(seed)
+     torch.cuda.manual_seed_all(seed)
+     np.random.seed(seed)
+     random.seed(seed)
+     torch.backends.cudnn.deterministic = True
+# 设置随机数种子
 
 if __name__ == '__main__':
     parser = ConfigArgumentParser(conflict_handler='resolve')
@@ -466,9 +477,12 @@ if __name__ == '__main__':
     parser.add_argument('--loader_num', type=int, default=4)
     parser.add_argument('--ops_num', type=int, default=2)
     parser.add_argument('--only-eval', action='store_true')
+    parser.add_argument('--rand-seed', type=int, default=20)
     args = parser.parse_args()
 
     assert (args.only_eval and args.save) or not args.only_eval, 'checkpoint path not provided in evaluation mode.'
+    
+    setup_seed(args.rand_seed)
 
     if not args.only_eval:
         if args.save:
