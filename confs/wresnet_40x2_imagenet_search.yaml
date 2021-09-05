@@ -1,0 +1,21 @@
+model:
+  type: wresnet40_2
+dataset: reduced_imagenet
+aug: ohl
+randaug:
+  N: 2
+  M: 9
+
+cutout: 0
+batch: 32
+epoch: 40  # 270
+lr: 0.01
+lr_schedule:
+  type: 'cosine'
+optimizer:
+  type: sgd
+  nesterov: True
+  decay: 0.0001
+  clip: 0
+  lars: False
+  label_smoothing: 0.0
